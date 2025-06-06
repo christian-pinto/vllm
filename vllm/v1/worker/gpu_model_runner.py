@@ -110,7 +110,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 cache_config.cache_dtype]
 
         self.is_multimodal_model = model_config.is_multimodal_model
-        self.is_pooling_model = model_config.pooler_config is not None
+        self.model_supports_multimodal_raw_input = model_config.model_supports_multimodal_raw_input
         self.max_model_len = model_config.max_model_len
         self.max_num_tokens = scheduler_config.max_num_batched_tokens
         self.max_num_reqs = scheduler_config.max_num_seqs
@@ -311,6 +311,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         Returns:
             True if the batch was reordered, False otherwise.
         """
+
+        # nothing to be reordered when the mdoel is attention free
+        if self.model_config.is_attention_free:
+            return False
+
         batch_reordered = self.attn_metadata_builders[0].reorder_batch(
             self.input_batch, scheduler_output)
 
@@ -536,7 +541,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         batch_reordered = self._may_reorder_batch(scheduler_output)
 
         if batch_changed or batch_reordered:
-            self.input_batch.refresh_sampling_metadata()
+            self.input_batch.refresh()
+
+    def _maybe_add_model_args(self, num_tokens: int, 
+                              model_kwargs: dict[str, Any],
+                              scheduler_output: "SchedulerOutput"=None):
+        pass
+
+    def _maybe_compute_attn_prefix(
+        self,
+        scheduler_output: "SchedulerOutput",
+    ) -> list[int]:
+        return [0] * len(self.kv_cache_config.kv_cache_groups)
+
+    def _maybe_prepare_additional_inputs(self,
+                                         scheduler_output: "SchedulerOutput",
+                                         token_indices: torch.Tensor):
+        pass
 
     def _get_cumsum_and_arange(
         self,
@@ -993,13 +1014,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             curr_group_outputs = self.model.get_multimodal_embeddings(
                 **batched_mm_inputs)
 
-            sanity_check_mm_encoder_outputs(
-                curr_group_outputs,
-                expected_num_items=len(grouped_mm_inputs),
-            )
+            if curr_group_outputs:
+                sanity_check_mm_encoder_outputs(
+                    curr_group_outputs,
+                    expected_num_items=len(grouped_mm_inputs),
+                )
 
-            for output in curr_group_outputs:
-                encoder_outputs.append(output)
+                for output in curr_group_outputs:
+                    encoder_outputs.append(output)
 
         # Cache the encoder outputs.
         for (req_id, input_id, pos_info), output in zip(
@@ -1240,9 +1262,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # embeddings), we always use embeddings (rather than token ids)
             # as input to the multimodal model, even when the input is text.
             input_ids = self.input_ids[:num_scheduled_tokens]
-            if has_token_types:
-                model_kwargs["token_type_ids"] = cast(
-                    torch.Tensor, self.token_type_ids)[:num_scheduled_tokens]
+            self._maybe_add_model_args(num_scheduled_tokens,
+                                       model_kwargs, scheduler_output)
+
             if mm_embeds:
                 inputs_embeds = self.model.get_input_embeddings(
                     input_ids, mm_embeds)
@@ -1258,9 +1280,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # multimodal models, it is not desirable for performance since
             # then the embedding layer is not included in the CUDA graph.
             input_ids = self.input_ids[:num_input_tokens]
-            if has_token_types:
-                model_kwargs["token_type_ids"] = cast(
-                    torch.Tensor, self.token_type_ids)[:num_input_tokens]
+            self._maybe_add_model_args(num_input_tokens, model_kwargs, scheduler_output)
             inputs_embeds = None
         if self.uses_mrope:
             positions = self.mrope_positions[:, :num_input_tokens]
@@ -1286,7 +1306,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 positions=positions,
                 intermediate_tensors=intermediate_tensors,
                 inputs_embeds=inputs_embeds,
-                **model_kwargs,
+                **MultiModalKwargs.as_kwargs(
+                    model_kwargs,
+                    device=self.device,
+                )
             )
 
             self.maybe_wait_for_kv_save()
@@ -1858,6 +1881,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         with self.maybe_dummy_run_with_lora(self.lora_config,
                                             num_scheduled_tokens):
             model = self.model
+            model_kwargs: dict[str, Any] = {}
+            self._maybe_add_model_args(num_tokens, model_kwargs)
             if self.is_multimodal_model:
                 input_ids = None
                 inputs_embeds = self.inputs_embeds[:num_tokens]
@@ -1888,17 +1913,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 intermediate_tensors = self.sync_and_slice_intermediate_tensors(
                     num_tokens, None, False)
 
-            with set_forward_context(
-                    attn_metadata,
-                    self.vllm_config,
-                    num_tokens=num_tokens,
-                    num_tokens_across_dp=num_tokens_across_dp):
-                outputs = model(
-                    input_ids=input_ids,
-                    positions=positions,
-                    intermediate_tensors=intermediate_tensors,
-                    inputs_embeds=inputs_embeds,
-                )
+            with set_forward_context(attn_metadata,
+                                     self.vllm_config,
+                                     num_tokens=num_tokens,
+                                     num_tokens_across_dp=num_tokens_across_dp,
+                                     seq_lens=seq_lens):
+                outputs = model(input_ids=input_ids,
+                                positions=positions,
+                                intermediate_tensors=intermediate_tensors,
+                                inputs_embeds=inputs_embeds,
+                                **MultiModalKwargs.as_kwargs(
+                                    model_kwargs,
+                                    device=self.device))
 
             positions = self.positions[:num_tokens].zero_()
             if self.use_aux_hidden_state_outputs:
