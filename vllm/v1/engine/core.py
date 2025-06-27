@@ -86,7 +86,11 @@ class EngineCore:
         self.collective_rpc("initialize_cache",
                             args=(num_gpu_blocks, num_cpu_blocks))
 
-        self.structured_output_manager = StructuredOutputManager(vllm_config)
+        if vllm_config.model_config.skip_tokenizer_init:
+            # Structured output generation requires a tokenizer
+            self.structured_output_manager = None
+        else:
+            self.structured_output_manager = StructuredOutputManager(vllm_config)
 
         # Setup scheduler.
         if isinstance(vllm_config.scheduler_config.scheduler_cls, str):
@@ -198,7 +202,11 @@ class EngineCore:
                 request.mm_inputs, request.mm_hashes)
 
         req = Request.from_engine_core_request(request)
-        if req.use_structured_output:
+        if req.use_structured_output and self.structured_output_manager:
+            # We check for `structured_output_manager` because
+            # a StructuredOutputManager is not instantiated if a tokenizer
+            # is not initialized for the model.
+
             # Start grammar compilation asynchronously
             self.structured_output_manager.grammar_init(req)
 
@@ -299,7 +307,8 @@ class EngineCore:
         return engine_core_outputs, scheduled_batch
 
     def shutdown(self):
-        self.structured_output_manager.clear_backend()
+        if self.structured_output_manager:
+            self.structured_output_manager.clear_backend()
         if self.model_executor:
             self.model_executor.shutdown()
         if self.scheduler:

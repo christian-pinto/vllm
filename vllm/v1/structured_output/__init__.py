@@ -46,12 +46,11 @@ class StructuredOutputManager:
         # compilation, so we set it to half the number of CPUs.
         max_workers = max(1, (multiprocessing.cpu_count() + 1) // 2)
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
-        self.tokenizer = None if vllm_config.model_config.skip_tokenizer_init \
-            else init_tokenizer_from_configs(
-                model_config=self.vllm_config.model_config,
-                scheduler_config=self.vllm_config.scheduler_config,
-                lora_config=self.vllm_config.lora_config,
-            ).get_lora_tokenizer(None)
+        self.tokenizer = init_tokenizer_from_configs(
+            model_config=self.vllm_config.model_config,
+            scheduler_config=self.vllm_config.scheduler_config,
+            lora_config=self.vllm_config.lora_config,
+        ).get_lora_tokenizer(None)
         reasoning_backend = vllm_config.decoding_config.reasoning_backend
         if reasoning_backend:
             reasoner_cls = ReasoningParserManager.get_reasoning_parser(
@@ -116,8 +115,6 @@ class StructuredOutputManager:
         scheduled_spec_decode_tokens: dict[str, list[int]],
     ) -> Optional[npt.NDArray[np.int32]]:
         # Prepare the structured output bitmask for this batch.
-        if not structured_output_request_ids:
-            return None
 
         max_num_spec_tokens = 0
         if self.vllm_config.speculative_config is not None:

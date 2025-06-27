@@ -544,7 +544,7 @@ class Scheduler(SchedulerInterface):
             self.requests,
             structured_output_request_ids,
             scheduled_spec_decode_tokens,
-        )
+        ) if structured_output_request_ids else None
         # Construct the scheduler output.
         new_reqs_data = [
             NewRequestData.from_request(req,
@@ -826,8 +826,9 @@ class Scheduler(SchedulerInterface):
                 # the outer lists can be of length > 1.
                 new_logprobs = logprobs.slice(req_index, req_index + 1)
 
-            if new_token_ids and self.structured_output_manager.should_advance(
-                    request):
+            if new_token_ids and self.structured_output_manager \
+                and self.structured_output_manager.should_advance(
+                request):
                 # NOTE: structured_output_request
                 # should not be None if use_structured_output, we have
                 # check above, so safe to ignore type warning
@@ -840,7 +841,8 @@ class Scheduler(SchedulerInterface):
 
             # Add newly generated spec token ids to the request.
             if spec_token_ids is not None:
-                if self.structured_output_manager.should_advance(request):
+                if self.structured_output_manager \
+                    and self.structured_output_manager.should_advance(request):
                     metadata = request.structured_output_request
                     # Needs to happen after new_token_ids are accepted.
                     request.spec_token_ids = metadata.grammar.validate_tokens(  # type: ignore[union-attr]
