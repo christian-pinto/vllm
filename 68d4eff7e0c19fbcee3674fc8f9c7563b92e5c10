@@ -1,0 +1,2 @@
+{"id":"689a7350-a36d-4f62-9547-ce9942fbe8a9","ts":"2026-01-28T09:26:44.978Z","version":"1.0.2","toolName":"apply_diff","taskID":"ecd71c40-ec55-427f-8523-f1d817cecaea","path":"vllm/multimodal/parse.py","numLinesApplied":6,"currentRange":{"startLine":609,"endLine":614}}
+{"id":"93a7dfd3-2a27-45b3-8a31-825ca336c9dc","ts":"2026-01-28T09:26:44.974Z","version":"1.0.2","toolName":"apply_diff","taskID":"ecd71c40-ec55-427f-8523-f1d817cecaea","path":"vllm/multimodal/parse.py","numLinesApplied":4,"currentRange":{"startLine":586,"endLine":589}}
